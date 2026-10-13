@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { loadWritingPosts } from "@/lib/writing";
+import { jsonLdScript } from "@/lib/json-ld";
+import { REGISTRY_ORIGIN } from "@/lib/registry-origin";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/writing" },
@@ -20,8 +22,55 @@ function formatDate(iso: string) {
 export default function WritingIndexPage() {
   const posts = loadWritingPosts();
 
+  // `Blog` rather than the `CollectionPage` the other index pages use
+  // (app/page.tsx, app/categories/page.tsx): this listing IS a blog, and
+  // `blogPost` is the property schema.org documents for it. The @id is the one
+  // each post's `isPartOf` points back at, so the index and the four post
+  // pages resolve to a single graph.
+  //
+  // Each entry repeats only what frontmatter actually carries — no `author` or
+  // `image` per entry here, since the post's own page is the authoritative
+  // node for those and this listing would just be restating it.
+  const blogJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "Blog",
+    "@id": `${REGISTRY_ORIGIN}/writing#blog`,
+    name: "Writing · ns-ui",
+    description: "Notes on building ns-ui, its registry, and the tools around it.",
+    url: `${REGISTRY_ORIGIN}/writing`,
+    inLanguage: "en",
+    publisher: { "@id": `${REGISTRY_ORIGIN}/#organization` },
+    blogPost: posts.map((post) => ({
+      "@type": "BlogPosting",
+      "@id": `${REGISTRY_ORIGIN}/writing/${post.slug}#post`,
+      headline: post.title,
+      description: post.description,
+      url: `${REGISTRY_ORIGIN}/writing/${post.slug}`,
+      datePublished: post.iso,
+      ...(post.updated ? { dateModified: post.updated } : {}),
+    })),
+  };
+
+  const breadcrumbJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "ns-ui", item: REGISTRY_ORIGIN },
+      { "@type": "ListItem", position: 2, name: "Writing", item: `${REGISTRY_ORIGIN}/writing` },
+    ],
+  };
+
   return (
     <main className="mx-auto w-full max-w-2xl px-6 pb-32 sm:px-10">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: jsonLdScript(blogJsonLd) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: jsonLdScript(breadcrumbJsonLd) }}
+      />
+
       <header className="pt-20 sm:pt-28">
         <p className="font-mono text-xs uppercase tracking-[0.18em] text-ns-muted">
           ns-ui / writing
@@ -41,8 +90,10 @@ export default function WritingIndexPage() {
               href={`/writing/${post.slug}`}
               className="group block rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ns-accent"
             >
+              {/* Machine-readable date, same as the post page — the listing is
+                  what a crawler hits first. */}
               <p className="font-mono text-[11px] uppercase tracking-wider text-ns-muted">
-                {formatDate(post.iso)}
+                <time dateTime={post.iso}>{formatDate(post.iso)}</time>
               </p>
               <h2 className="mt-2 text-lg font-medium tracking-tight text-foreground transition-colors group-hover:text-ns-accent">
                 {post.title}

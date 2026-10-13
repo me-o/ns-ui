@@ -3,6 +3,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { loadWritingPost, loadWritingPosts } from "@/lib/writing";
 import { getStarCount } from "@/lib/github-stars";
+import { jsonLdScript } from "@/lib/json-ld";
+import { REGISTRY_ORIGIN } from "@/lib/registry-origin";
 import { PostBody } from "../_components/post-body";
 import { GitHubStarButton } from "../../_components/github-star-button";
 import { EmailCapture } from "../../_components/email-capture";
@@ -52,8 +54,67 @@ export default async function WritingPostPage({
   if (!post) notFound();
   const stars = await getStarCount();
 
+  const pageUrl = `${REGISTRY_ORIGIN}/writing/${post.slug}`;
+
+  // BlogPosting rather than bare Article: these are dated posts on a blog.
+  // `isPartOf` carries the same @id app/writing/page.tsx gives the Blog, so a
+  // post and the index read as one graph instead of two unrelated blocks —
+  // the same @id-linking lib/site-identity.ts uses for SoftwareApplication
+  // and Organization.
+  //
+  // Deliberately absent, because an honest partial beats a fabricated field
+  // (same reasoning as the country-only PostalAddress in lib/site-identity.ts):
+  // `keywords` and `articleSection` — no such frontmatter key exists;
+  // `wordCount` — these posts are table-heavy, so a count scraped off raw
+  // markdown would report pipes and `##` as words. `dateModified` appears
+  // only when a post declares `updated:` (see lib/writing.ts); no post does
+  // today, so it is absent rather than guessed from a file mtime.
+  const blogPostingJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "@id": `${pageUrl}#post`,
+    headline: post.title,
+    description: post.description,
+    url: pageUrl,
+    datePublished: post.iso,
+    // Spread, not a literal: omitted entirely unless frontmatter carries a
+    // real `updated:` date. Never a file mtime.
+    ...(post.updated ? { dateModified: post.updated } : {}),
+    inLanguage: "en",
+    isAccessibleForFree: true,
+    // The per-slug opengraph-image.tsx in this folder, at its file-convention URL.
+    image: `${pageUrl}/opengraph-image`,
+    author: {
+      "@type": "Person",
+      name: "Nikolas Sapalidis",
+      url: `${REGISTRY_ORIGIN}/about`,
+    },
+    publisher: { "@id": `${REGISTRY_ORIGIN}/#organization` },
+    isPartOf: { "@id": `${REGISTRY_ORIGIN}/writing#blog` },
+    mainEntityOfPage: { "@type": "WebPage", "@id": pageUrl },
+  };
+
+  const breadcrumbJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "ns-ui", item: REGISTRY_ORIGIN },
+      { "@type": "ListItem", position: 2, name: "Writing", item: `${REGISTRY_ORIGIN}/writing` },
+      { "@type": "ListItem", position: 3, name: post.title, item: pageUrl },
+    ],
+  };
+
   return (
     <main className="mx-auto w-full max-w-2xl px-6 pb-32 sm:px-10">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: jsonLdScript(blogPostingJsonLd) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: jsonLdScript(breadcrumbJsonLd) }}
+      />
+
       <header className="pt-20 sm:pt-28">
         <Link
           href="/writing"
@@ -61,8 +122,18 @@ export default async function WritingPostPage({
         >
           ns-ui / writing
         </Link>
+        {/* <time dateTime> rather than bare text: the date was already visible
+            here, but only a human could read it. The machine-readable
+            attribute is the freshness signal — crawlers and assistants weight
+            recency, and an unparseable date reads as undated. */}
         <p className="mt-6 font-mono text-[11px] uppercase tracking-wider text-ns-muted">
-          {formatDate(post.iso)}
+          <time dateTime={post.iso}>{formatDate(post.iso)}</time>
+          {post.updated ? (
+            <>
+              {" · Updated "}
+              <time dateTime={post.updated}>{formatDate(post.updated)}</time>
+            </>
+          ) : null}
         </p>
         {/* 65–75ch measure, generous leading — this page is a reading
             experience, so the title gets the same width constraint as the
