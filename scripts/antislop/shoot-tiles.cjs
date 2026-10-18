@@ -15,7 +15,10 @@ const STEP = 700, SETTLE = 900, MAX = 60;
   const b = await chromium.launch();
   const p = await b.newPage({ viewport: { width: 1440, height: 900 } });
   await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 150000 });
-  await p.waitForTimeout(8000);
+  // NS_LOAD_MS: initial settle before the walk. 8s is right for live pages and
+  // wrong for slow archive heroes: squarespace-2014's first Wayback scene takes
+  // ~25s, and an 8s settle captured 97% white tiles that passed every check.
+  await p.waitForTimeout(Number(process.env.NS_LOAD_MS) || 8000);
 
   // Pick the scroller: window unless a child element scrolls materially further.
   const probe = await p.evaluate(() => {
@@ -61,6 +64,10 @@ const STEP = 700, SETTLE = 900, MAX = 60;
   // and 48.2% of the page was never captured. Neither instrument errored.
   const landings = [];
   let stuck = 0;
+  // Instant scroll. With `scroll-behavior: smooth`, a page's own scroll lock can
+  // catch the animation mid-flight: databuddy asked for y4200 and stopped at
+  // 3907, one short landing, so the two-in-a-row abort below never fired.
+  await p.addStyleTag({ content: 'html, body { scroll-behavior: auto !important; }' });
   for (let y = 0; y < height && n < MAX; y += STEP) {
     if (sel) await p.evaluate((a) => { document.querySelector(a[0]).scrollTop = a[1]; }, [sel, y]);
     else await p.evaluate((yy) => window.scrollTo(0, yy), y);
@@ -88,15 +95,20 @@ const STEP = 700, SETTLE = 900, MAX = 60;
   const deepest = landings.reduce((m, l) => Math.max(m, l.landed), 0);
   const reached = deepest + 900;
   const clamped = reached < height - 50;
-  console.log(JSON.stringify({
+  const walk = {
     slug, docH_before: probe.docH, docH_after: after,
     scroller: sel || 'window', walkHeight: height, tiles: n,
     // CLAMPED means the capture is incomplete and the tiles lie. Do not stitch
     // or rate from it: re-walk with wheel events (p.mouse.wheel) instead.
     clamped, reachedPx: reached, coverage: +(reached / height).toFixed(3),
     innerCands: probe.cands,
-  }));
+    landings,
+  };
+  // Persist beside the tiles. stitch.py reads walkHeight and `clamped` from
+  // here, so a parallel rater never hand-edits a shared slug->height map --
+  // 26 agents editing one dict is a merge conflict, not a measurement.
+  fs.writeFileSync(outdir + '/walk.json', JSON.stringify(walk, null, 2));
+  console.log(JSON.stringify(walk));
   if (clamped) console.error(`CLAMPED: reached ${reached}px of ${height}px (${Math.round(100 * reached / height)}%) — tiles are incomplete, re-walk with wheel events`);
-  await b.close();
   await b.close();
 })();
