@@ -202,7 +202,6 @@ export function SiteShell({
   }, []);
 
   const [query, setQuery] = useState("");
-  const activeRef = useRef<HTMLAnchorElement | null>(null);
   const navScrollRef = useRef<HTMLDivElement | null>(null);
   const mainRef = useRef<HTMLDivElement | null>(null);
   // The drawer's own toggle button — closing the drawer without restoring
@@ -410,39 +409,48 @@ export function SiteShell({
   // The list is long enough that the active item is routinely scrolled out
   // of view (arriving via a catalog card, a direct link, prev/next) — so pull
   // it into the middle of the panel rather than leaving the visitor to hunt.
+  // A row the visitor can already see (they just clicked it) stays put.
+  //
+  // One component is listed under every matching category, so several anchors
+  // share the href. A ref on "the" active link settles on whichever committed
+  // last, usually a copy inside a still-closed <details>. Closed details hide
+  // the body with `content-visibility: hidden` on `::details-content` (the
+  // box contributes nothing to scrollHeight) but descendants still report a
+  // non-zero getBoundingClientRect() parked outside the scrollport. Centering
+  // that ghost adds a delta past the scroll range and the panel slams to the
+  // bottom. Measure an open copy instead.
+  //
   // Deferred one frame: the section-opening effect above can still be
-  // committing when this runs, and `scrollIntoView` on an element inside a
-  // closed <details> is a no-op (no layout box).
+  // committing when this runs. Adjust this panel's `scrollTop` directly
+  // rather than `scrollIntoView` — that walks every ancestor scrollport and
+  // was also scrolling the document. `tree` as well as `pathname`: on a
+  // component route the tree is fetched, so at mount there is no link to
+  // centre on. Keyed on pathname alone this bailed once and never ran again.
+  // Not `openIds` — that would re-centre on every manual expand.
   useEffect(() => {
+    if (!active) return;
     const id = requestAnimationFrame(() => {
-      const el = activeRef.current;
       const container = navScrollRef.current;
-      if (!el || !container) return;
-      // Adjust the nav panel's own `scrollTop` directly rather than calling
-      // `el.scrollIntoView({ block: "center" })`: that walks *every*
-      // ancestor scrolling box, not just the nearest one, so it was also
-      // centering the link in the full window — visible as the whole page
-      // landing scrolled down on arrival, worse the further down the
-      // alphabetized tree that component's link happened to sit. Computing
-      // the offset ourselves keeps this scoped to the nav's own
-      // `overflow-y-auto` box.
-      const elRect = el.getBoundingClientRect();
-      const containerRect = container.getBoundingClientRect();
+      if (!container) return;
+      const shown = [
+        ...container.querySelectorAll<HTMLAnchorElement>(
+          `a[href="/components/${CSS.escape(active)}"]`,
+        ),
+      ].filter((el) => !el.closest("details:not([open])"));
+      if (shown.length === 0) return;
+      const box = container.getBoundingClientRect();
+      const fullyInside = (el: HTMLElement) => {
+        const r = el.getBoundingClientRect();
+        return r.height > 0 && r.top >= box.top - 1 && r.bottom <= box.bottom + 1;
+      };
+      if (shown.some(fullyInside)) return;
+      const elRect = shown[0].getBoundingClientRect();
       const delta =
-        elRect.top - containerRect.top - (container.clientHeight - elRect.height) / 2;
+        elRect.top - box.top - (container.clientHeight - elRect.height) / 2;
       container.scrollTop += delta;
     });
     return () => cancelAnimationFrame(id);
-    // `tree` as well as `pathname`: on a component route the tree is fetched,
-    // so at mount there is no NavLink to centre on and `activeRef.current` is
-    // null — keyed on pathname alone this bailed once and never ran again,
-    // leaving the active link wherever the scroll box happened to be on all
-    // 534 component routes. The rAF still lands after the section-opening
-    // effect above has committed (it is declared first, so its setOpenIds is
-    // flushed and re-rendered before the frame), which is what keeps
-    // getBoundingClientRect off a closed <details> with no layout box. Not
-    // `openIds` — that would re-centre on every manual expand.
-  }, [pathname, tree]);
+  }, [pathname, tree, active]);
 
   useEffect(() => {
     if (!open) return;
@@ -1017,7 +1025,6 @@ export function SiteShell({
               isFiltering={isFiltering}
               active={active}
               isOnComponentPage={isOnComponentPage}
-              activeRef={activeRef}
             />
           ))}
         </div>
@@ -1097,7 +1104,6 @@ function NavCategory({
   isFiltering,
   active,
   isOnComponentPage,
-  activeRef,
 }: {
   group: NavGroup;
   /** True while the tree is still being fetched, so this row knows its empty
@@ -1112,7 +1118,6 @@ function NavCategory({
   isFiltering: boolean;
   active: string | null;
   isOnComponentPage: boolean;
-  activeRef: React.RefObject<HTMLAnchorElement | null>;
 }) {
   return (
     <details
@@ -1149,7 +1154,6 @@ function NavCategory({
             onToggle={(v) => onToggleKind(k.id, v)}
             active={active}
             isOnComponentPage={isOnComponentPage}
-            activeRef={activeRef}
           />
         ))}
         {pending ? (
@@ -1167,7 +1171,6 @@ function NavCategory({
                 item={i}
                 isActiveItem={i.name === active}
                 isCurrentPage={isOnComponentPage && i.name === active}
-                activeRef={activeRef}
               />
             ))}
           </ul>
@@ -1184,14 +1187,12 @@ function NavKindGroup({
   onToggle,
   active,
   isOnComponentPage,
-  activeRef,
 }: {
   kind: NavKind;
   open: boolean;
   onToggle: (open: boolean) => void;
   active: string | null;
   isOnComponentPage: boolean;
-  activeRef: React.RefObject<HTMLAnchorElement | null>;
 }) {
   return (
     <details
@@ -1213,7 +1214,6 @@ function NavKindGroup({
             item={i}
             isActiveItem={i.name === active}
             isCurrentPage={isOnComponentPage && i.name === active}
-            activeRef={activeRef}
           />
         ))}
       </ul>
@@ -1239,17 +1239,14 @@ const NavLink = memo(function NavLink({
   item,
   isActiveItem,
   isCurrentPage,
-  activeRef,
 }: {
   item: NavItem;
   isActiveItem: boolean;
   isCurrentPage: boolean;
-  activeRef: React.RefObject<HTMLAnchorElement | null>;
 }) {
   return (
     <li>
       <Link
-        ref={isActiveItem ? activeRef : undefined}
         href={`/components/${item.name}`}
         // This sidebar lists every component, so the default fired ~126 RSC
         // prefetches on every page load — for a list the visitor picks at
